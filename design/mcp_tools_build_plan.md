@@ -10,6 +10,20 @@
    - an external agent runner that stores per-user per-mount keys
    - automatic key rotation using authenticated management calls
 
+## Package Layering
+
+To avoid circular dependencies between tool libraries and server composition:
+
+1. Keep this crate as the shared MCP core layer:
+   - exported traits and shared types for tool integrations
+   - API-key contract types and store interfaces
+   - DB migrations + migration runner function (`create_agent_tables`)
+2. Put the concrete MCP server wiring in a separate server-only package:
+   - axum startup/runtime assembly
+   - rmcp transport mounting
+   - composition of concrete tool implementations from callee libraries
+3. Callee libraries should depend only on the shared core layer (not server package).
+
 ## Non-Goals (for initial delivery)
 
 1. Replacing `subseq_auth` identity flows.
