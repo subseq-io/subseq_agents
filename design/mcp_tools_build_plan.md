@@ -1,66 +1,67 @@
-# subseq_agents Build Plan (rmcp + axum + subseq_auth)
+# subseq_agents Build Plan (rmcp + axum + API-key auth)
 
 ## Goals
 
 1. Provide an MCP server in this repo with a high-level `tool_router` surface (`rmcp`).
-2. Run over `axum` transport with JWT authentication middleware.
-3. Derive trusted `AuthenticatedUser -> UserId` from request auth, never from tool arguments.
-4. Keep room for deferred components:
-   - agent-scoped token IdP flow
-   - agent runner that brokers user auth and MCP calls
+2. Expose per-mount API keys for MCP requests instead of JWT-bearing MCP calls.
+3. Keep key management authenticated via existing `subseq_auth` user JWT/session flows.
+4. Preserve trusted `UserId` propagation to domain permission checks through a generalized actor-first tool contract.
+5. Keep room for deferred components:
+   - an external agent runner that stores per-user per-mount keys
+   - automatic key rotation using authenticated management calls
 
 ## Non-Goals (for initial delivery)
 
-1. Full implementation of IdP token exchange.
-2. Full implementation of the external agent runner.
-3. Domain-complete tool set on day 1.
+1. Replacing `subseq_auth` identity flows.
+2. Building a full external agent runner.
+3. Domain-complete tool coverage on day 1.
 
-## Core Architecture
+## Route Profile
 
-### 1) Crate Layout
+The route builder should emit an `axum::Router` for one MCP mount profile.
 
-- `src/lib.rs`: public crate entry points and prelude exports.
-- `src/server/mod.rs`: `axum` app builder and MCP route mounting.
-- `src/auth/mod.rs`: JWT validation, claim mapping, auth context types.
-- `src/auth/middleware.rs`: request middleware that validates bearer token and injects actor context.
-- `src/tools/mod.rs`: `rmcp` tool registration and router composition.
-- `src/tools/policy.rs`: tool auth policy registry (`public` vs `authenticated`, future scopes).
-- `src/tools/extract.rs`: helper extractors to read actor context inside tool handlers.
-- `src/error.rs`: transport-safe error mapping (`401`, `403`, structured auth failures).
+```rust
+pub struct McpMountProfile {
+    pub name: &'static str, // used in /mcp/{name}
+}
 
-### 2) Trust Boundaries
+pub fn mcp_mount_router<S>(
+    profile: McpMountProfile,
+    tool_router: rmcp::handler::server::router::tool::ToolRouter<S>,
+) -> axum::Router<S>;
+```
 
-1. `Authorization: Bearer <jwt>` enters at `axum` middleware.
-2. Middleware validates signature/issuer/audience/expiry and maps `sub -> UserId`.
-3. Middleware injects a trusted actor into request extensions.
-4. Tool execution reads actor only from trusted context.
-5. Tool params are untrusted input only.
+Mounted routes:
 
-## Answer To Open Question: Auth Requirement + user_id Propagation
+1. `POST /mcp/{name}` (or transport-specific MCP route) for tool execution/listing over rmcp.
+2. `GET /mcp/{name}/key` list active keys for current authenticated user + mount.
+3. `POST /mcp/{name}/key/{key_name}` create key for current authenticated user + mount.
+4. `DELETE /mcp/{name}/key/{key_name}` revoke key for current authenticated user + mount.
 
-Use an explicit tool-policy registry wrapped around `rmcp` router.
+## Auth Model
 
-### Pattern
+Two auth lanes:
 
-1. Define `ToolAuthPolicy`:
-   - `Public`
-   - `Authenticated` (later: `AuthenticatedWithScopes(Vec<String>)`)
-2. Register each tool with both:
-   - `rmcp` handler/route
-   - required `ToolAuthPolicy`
-3. On each tool call:
-   - resolve tool name
-   - enforce policy before handler execution
-   - reject with `401/403` if policy fails
-4. Pass user identity via trusted context:
-   - middleware inserts `AuthenticatedActor { user_id, claims }`
-   - tool handlers extract `AuthenticatedActor` from request context/extensions
+1. MCP lane (`/mcp/{name}`):
+   - authenticate via API key only
+   - resolve key -> trusted `UserId`
+2. Management lane (`/mcp/{name}/key*`):
+   - authenticate via `subseq_auth::prelude::AuthenticatedUser`
+   - create/list/delete keys for that user
 
-This guarantees auth requirements are explicit, testable, and not dependent on model-provided fields.
+### API Key Scope
+
+Each key is scoped to:
+
+1. `user_id` (owner)
+2. `mcp_mount_name`
+3. `key_name` (human label)
+
+The lookup must enforce all three as applicable and only return `UserId` from DB state.
 
 ## Generalized Calling Contract (Trusted Actor First)
 
-Every internal tool function should implement a common actor-first signature:
+Every internal tool function should implement one actor-first shape:
 
 ```rust
 async fn run_tool(
@@ -70,46 +71,57 @@ async fn run_tool(
 ) -> Result<ToolOutput, ToolError>;
 ```
 
-Where:
-
-- `ToolActor` is created only by auth middleware (never deserialized from tool args).
-- `ToolInput` is tool-specific untrusted payload.
-- `ToolDeps` carries shared dependencies (db pools, domain operation structs, config).
-
-### Contract Types
-
 ```rust
 pub struct ToolActor {
     pub user_id: subseq_auth::user_id::UserId,
-    pub issuer: String,
-    pub audience: String,
-    pub scopes: Vec<String>,
-    pub jwt_id: Option<String>,
-}
-
-pub enum ToolAuthPolicy {
-    Public,
-    Authenticated,
-}
-
-pub struct ToolDescriptor<I, O> {
-    pub name: &'static str,
-    pub policy: ToolAuthPolicy,
-    pub run: fn(&ToolDeps, &ToolActor, I) -> ToolFuture<O>,
+    pub mcp_mount_name: String,
+    pub api_key_id: uuid::Uuid,
+    pub api_key_name: String,
 }
 ```
 
-### rmcp Adapter Rule
+Rules:
 
-`rmcp` handlers should be thin adapters only:
+1. `ToolActor` is only middleware-generated from a validated API key lookup.
+2. `ToolInput` is untrusted user/model payload.
+3. Tool/domain functions do not accept trusted `user_id` in payload.
+4. rmcp handlers are thin adapters: extract actor, parse input, call `run_tool`.
 
-1. Extract `ToolActor` from trusted context/extensions (for example `Extension<ToolActor>`).
-2. Parse tool args into `ToolInput`.
-3. Call descriptor `run(&deps, &actor, input)`.
-4. Convert result/error back to MCP response shape.
+## Key Storage Contract
 
-This keeps all domain tools on one generalized calling contract while still integrating with
-`rmcp` router mechanics.
+Recommended table (example):
+
+- `agent.mcp_api_keys`
+  - `id uuid pk`
+  - `user_id uuid not null`
+  - `mcp_mount_name text not null`
+  - `key_name text not null`
+  - `secret_hash text not null`
+  - `secret_prefix text not null`
+  - `created_at timestamptz not null default now()`
+  - `last_used_at timestamptz null`
+  - `revoked_at timestamptz null`
+  - `expires_at timestamptz null`
+
+Constraints:
+
+1. Unique active key by `(user_id, mcp_mount_name, key_name)` (partial index where `revoked_at is null`).
+2. No plaintext secret storage.
+
+Token format recommendation:
+
+1. Return only once on create.
+2. Embed key id in presented token to enable direct row lookup.
+3. Verify secret with constant-time hash check.
+
+## Security Requirements
+
+1. `GET /mcp/{name}/key` must return metadata only, never secret values.
+2. `POST /mcp/{name}/key/{key_name}` returns plaintext secret once.
+3. `DELETE` is revocation (soft delete), not hard row deletion.
+4. Tool request logging must avoid secret leakage.
+5. Rate-limit failed key auth attempts per source.
+6. Keep TLS required for all inbound traffic.
 
 ## Phased Delivery
 
@@ -117,107 +129,100 @@ This keeps all domain tools on one generalized calling contract while still inte
 
 Deliverables:
 
-1. Add dependencies (`rmcp`, `axum`, `tower`, `serde`, `tracing`, `subseq_auth`, etc.).
-2. Replace template code in `src/lib.rs` with crate module skeleton.
-3. Add basic README section for running the MCP server.
+1. Add dependencies (`rmcp`, `axum`, `tower`, `serde`, `tracing`, `subseq_auth`, `sqlx`).
+2. Replace template code in `src/lib.rs` with module skeleton.
+3. Add migration for `agent.mcp_api_keys`.
 
 Acceptance:
 
 1. `cargo check` passes.
-2. Crate exports app builder and server startup entry points.
+2. Migration applies on clean database.
 
-## Phase 1: MCP Server Skeleton
-
-Deliverables:
-
-1. Stand up `axum` router and mount MCP endpoint (streamable HTTP transport).
-2. Create a minimal tool set (`health`/`ping`) through `tool_router`.
-3. Add structured error responses and tracing spans.
-
-Acceptance:
-
-1. MCP handshake/list-tools works without auth for explicitly `Public` tool(s).
-2. Logs include request id/tool name/status.
-
-## Phase 2: Auth Middleware + Context Injection
+## Phase 1: Route Profile + MCP Skeleton
 
 Deliverables:
 
-1. Add JWT bearer middleware using `subseq_auth`-compatible validation patterns.
-2. Introduce `AuthenticatedActor` in request extensions.
-3. Build policy enforcement layer for tool calls.
+1. Implement `mcp_mount_router(profile, tool_router)`.
+2. Mount one MCP profile with a public health/ping tool.
+3. Add transport-safe error mapping and request tracing.
 
 Acceptance:
 
-1. Missing/invalid token returns `401`.
-2. Auth-required tool executes with trusted `user_id` from claims.
-3. Tool args containing fake `user_id` are ignored/rejected.
+1. MCP list-tools/calls work on mount.
+2. Route mount path matches `/mcp/{name}` contract.
+
+## Phase 2: API Key Middleware + Management Routes
+
+Deliverables:
+
+1. Add API key middleware for MCP lane.
+2. Add key list/create/delete handlers (JWT/session-authenticated via `AuthenticatedUser`).
+3. Inject `ToolActor` into MCP request context from key lookup.
+
+Acceptance:
+
+1. Missing/invalid key returns `401`.
+2. Valid key resolves expected `ToolActor.user_id`.
+3. Key endpoints are inaccessible without authenticated user.
 
 ## Phase 3: Domain Tool Surfaces
 
 Deliverables:
 
-1. Add first real tool modules backed by domain libs (for example `subseq_graph::operations`).
-2. Ensure all domain calls require explicit `actor: UserId`.
-3. Return machine-readable permission errors compatible with `subseq_auth` response shape.
+1. Add first real tool module (for example `subseq_graph::operations`).
+2. Pass `actor.user_id` into domain operations.
+3. Preserve machine-readable permission-denied shape.
 
 Acceptance:
 
-1. End-to-end authorized/unauthorized tests for each tool.
-2. No domain tool accepts trusted identity through input payload.
+1. Allowed/denied authorization paths tested end-to-end.
+2. Payload-supplied identity fields are ignored/rejected.
 
-## Phase 4: IdP + Agent Runner Interface Stubs (Deferred Integration)
+## Phase 4: Rotation + Runner Contracts (Deferred)
 
 Deliverables:
 
-1. Define token contract doc for agent-issued MCP JWTs:
-   - required claims (`iss`, `aud`, `sub`, `exp`, `iat`, `scope`)
-   - optional (`jti`, `thread_id`, `azp`)
-2. Add placeholder endpoints/interfaces for token verification config rotation (JWKS or equivalent).
-3. Define runner-to-MCP protocol expectations (headers, retry rules, correlation ids).
+1. Document runner key lifecycle:
+   - create new key via authenticated management endpoint
+   - atomically swap in runner
+   - revoke old key
+2. Add optional expiration/rotation policy defaults.
+3. Add endpoint contract docs for agent integration.
 
 Acceptance:
 
-1. Contract docs checked in.
-2. Validation code can be switched from forwarded-user-token to delegated-token without API break.
+1. Rotation flow can run without MCP downtime.
+2. Revoked keys fail immediately.
 
 ## Phase 5: Hardening + Operations
 
 Deliverables:
 
-1. Audit logs for tool call auth decisions.
-2. Metrics for auth failures, permission denials, and per-tool latency.
-3. Negative tests for replay/expired/wrong-audience tokens.
+1. Audit logs for key create/revoke and MCP auth decisions.
+2. Metrics for key auth success/fail, per-mount throughput, denial codes.
+3. Negative tests for replayed/revoked/expired keys.
 
 Acceptance:
 
-1. CI includes unit + integration test suites for auth and tool dispatch.
-2. Observability confirms actor and tool-level authorization outcomes.
+1. CI covers unit + integration + abuse tests.
+2. No plaintext key material in logs.
 
 ## Testing Strategy
 
 1. Unit tests:
-   - bearer parsing
-   - claim-to-`UserId` mapping
-   - tool policy matching and enforcement
+   - key parser and lookup
+   - secret hash verification
+   - actor context injection
 2. Integration tests:
-   - list tools, call tool with/without token
-   - permission denied paths returning structured errors
+   - list/create/delete keys with authenticated user
+   - call MCP route with valid vs invalid key
 3. Abuse tests:
-   - forged `user_id` in payload
-   - wrong `aud`/`iss`
-   - expired token
-
-## CI/Deployment Notes
-
-1. Keep server stateless for auth decisions; no mutable in-memory trust source.
-2. Keep container-safe defaults:
-   - bind address/port/env configurable
-   - timeouts for inbound requests
-3. Ensure healthcheck endpoint remains available and cheap.
+   - forged payload identity
+   - revoked key replay
+   - expired key
 
 ## Immediate Next Build Steps
 
-1. Implement Phase 0 + Phase 1 skeleton.
-2. Implement Phase 2 auth middleware and one authenticated tool.
-3. Integrate first domain tool via `subseq_graph::operations` for end-to-end verification.
+1. Implement migration + key repository interface.
+2. Implement `mcp_mount_router` with one mount and one tool.
+3. Implement key management endpoints and API key auth middleware.
