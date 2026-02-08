@@ -34,7 +34,7 @@ pub fn mcp_mount_router<S>(
 Mounted routes:
 
 1. `POST /mcp/{name}` (or transport-specific MCP route) for tool execution/listing over rmcp.
-2. `GET /mcp/{name}/key` list active keys for current authenticated user + mount.
+2. `GET /mcp/{name}/key` list active keys for current authenticated user + mount (metadata only).
 3. `POST /mcp/{name}/key/{key_name}` create key for current authenticated user + mount.
 4. `DELETE /mcp/{name}/key/{key_name}` revoke key for current authenticated user + mount.
 
@@ -96,7 +96,7 @@ Recommended table (example):
   - `user_id uuid not null`
   - `mcp_mount_name text not null`
   - `key_name text not null`
-  - `secret_hash text not null`
+  - `secret_hash text not null` // salted password-hash string (e.g., argon2id encoded hash)
   - `secret_prefix text not null`
   - `created_at timestamptz not null default now()`
   - `last_used_at timestamptz null`
@@ -107,12 +107,24 @@ Constraints:
 
 1. Unique active key by `(user_id, mcp_mount_name, key_name)` (partial index where `revoked_at is null`).
 2. No plaintext secret storage.
+3. Secret verification must compare against stored salted hash only (never decrypt).
 
 Token format recommendation:
 
 1. Return only once on create.
 2. Embed key id in presented token to enable direct row lookup.
-3. Verify secret with constant-time hash check.
+3. Verify secret with constant-time salted-hash verification (for example argon2id verify).
+
+Key management response contract:
+
+1. `GET /mcp/{name}/key` returns key metadata only:
+   - `key_name`
+   - `created_at`
+   - `last_used_at`
+   - `expires_at`
+   - `revoked_at`
+2. `POST /mcp/{name}/key/{key_name}` returns secret exactly once and never again.
+3. `DELETE /mcp/{name}/key/{key_name}` returns revocation status/metadata only.
 
 ## Security Requirements
 
