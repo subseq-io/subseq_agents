@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use subseq_auth::prelude::UserId;
 
-const API_KEY_PREFIX: &str = "mcpk_";
+pub(crate) const API_KEY_PREFIX: &str = "mcpk_";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +48,13 @@ pub struct CreatedApiKey {
 }
 
 pub type ApiKeyAuthResult = Option<ToolActor>;
+
+pub(crate) struct GeneratedApiKey {
+    pub id: Uuid,
+    pub plaintext_key: String,
+    pub secret_hash: String,
+    pub secret_prefix: String,
+}
 
 #[derive(Debug, Error)]
 pub enum ApiKeyStoreError {
@@ -181,18 +188,13 @@ impl ApiKeyStore for InMemoryApiKeyStore {
             return Err(ApiKeyStoreError::Conflict);
         }
 
-        let id = Uuid::new_v4();
-        let mut secret_bytes = [0_u8; 32];
-        OsRng.fill_bytes(&mut secret_bytes);
-        let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext_key = format!("{API_KEY_PREFIX}{id}.{secret}");
-        let secret_prefix = secret.chars().take(8).collect::<String>();
-
-        let salt = SaltString::generate(&mut OsRng);
-        let secret_hash = Argon2::default()
-            .hash_password(secret.as_bytes(), &salt)
-            .map_err(|err| ApiKeyStoreError::Internal(err.to_string()))?
-            .to_string();
+        let GeneratedApiKey {
+            id,
+            plaintext_key,
+            secret_hash,
+            secret_prefix,
+            ..
+        } = generate_api_key(Uuid::new_v4())?;
 
         let row = StoredApiKey {
             id,
@@ -266,12 +268,7 @@ impl ApiKeyStore for InMemoryApiKeyStore {
             return Ok(None);
         }
 
-        let hash = PasswordHash::new(&row.secret_hash)
-            .map_err(|err| ApiKeyStoreError::Internal(err.to_string()))?;
-        if Argon2::default()
-            .verify_password(secret.as_bytes(), &hash)
-            .is_err()
-        {
+        if !verify_secret_hash(&row.secret_hash, secret)? {
             return Ok(None);
         }
 
@@ -285,7 +282,7 @@ impl ApiKeyStore for InMemoryApiKeyStore {
     }
 }
 
-fn parse_presented_key(presented_key: &str) -> Option<(Uuid, &str)> {
+pub(crate) fn parse_presented_key(presented_key: &str) -> Option<(Uuid, &str)> {
     let token = presented_key.trim();
     let token = token.strip_prefix(API_KEY_PREFIX)?;
     let (id, secret) = token.split_once('.')?;
@@ -294,6 +291,38 @@ fn parse_presented_key(presented_key: &str) -> Option<(Uuid, &str)> {
         return None;
     }
     Some((id, secret))
+}
+
+pub(crate) fn generate_api_key(id: Uuid) -> Result<GeneratedApiKey, ApiKeyStoreError> {
+    let mut secret_bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut secret_bytes);
+    let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
+    let plaintext_key = format!("{API_KEY_PREFIX}{id}.{secret}");
+    let secret_prefix = secret.chars().take(8).collect::<String>();
+
+    let salt = SaltString::generate(&mut OsRng);
+    let secret_hash = Argon2::default()
+        .hash_password(secret.as_bytes(), &salt)
+        .map_err(|err| ApiKeyStoreError::Internal(err.to_string()))?
+        .to_string();
+
+    Ok(GeneratedApiKey {
+        id,
+        plaintext_key,
+        secret_hash,
+        secret_prefix,
+    })
+}
+
+pub(crate) fn verify_secret_hash(
+    secret_hash: &str,
+    presented_secret: &str,
+) -> Result<bool, ApiKeyStoreError> {
+    let parsed_hash = PasswordHash::new(secret_hash)
+        .map_err(|err| ApiKeyStoreError::Internal(err.to_string()))?;
+    Ok(Argon2::default()
+        .verify_password(presented_secret.as_bytes(), &parsed_hash)
+        .is_ok())
 }
 
 #[cfg(test)]
