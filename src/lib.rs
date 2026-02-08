@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod api_keys;
+pub mod middleware;
+pub mod router;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use api_keys::{
+    ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
+    InMemoryApiKeyStore, ToolActor,
+};
+pub use middleware::api_key_auth_middleware;
+pub use router::{McpMountProfile, mcp_mount_router};

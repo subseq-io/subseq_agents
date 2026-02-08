@@ -4,3 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+http = "1"
+rand = "0.9"
+rmcp = { version = "0.14", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subseq_auth = { path = "../subseq_auth" }
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
