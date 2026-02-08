@@ -58,6 +58,59 @@ Use an explicit tool-policy registry wrapped around `rmcp` router.
 
 This guarantees auth requirements are explicit, testable, and not dependent on model-provided fields.
 
+## Generalized Calling Contract (Trusted Actor First)
+
+Every internal tool function should implement a common actor-first signature:
+
+```rust
+async fn run_tool(
+    deps: &ToolDeps,
+    actor: &ToolActor,
+    input: ToolInput,
+) -> Result<ToolOutput, ToolError>;
+```
+
+Where:
+
+- `ToolActor` is created only by auth middleware (never deserialized from tool args).
+- `ToolInput` is tool-specific untrusted payload.
+- `ToolDeps` carries shared dependencies (db pools, domain operation structs, config).
+
+### Contract Types
+
+```rust
+pub struct ToolActor {
+    pub user_id: subseq_auth::user_id::UserId,
+    pub issuer: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub jwt_id: Option<String>,
+}
+
+pub enum ToolAuthPolicy {
+    Public,
+    Authenticated,
+}
+
+pub struct ToolDescriptor<I, O> {
+    pub name: &'static str,
+    pub policy: ToolAuthPolicy,
+    pub run: fn(&ToolDeps, &ToolActor, I) -> ToolFuture<O>,
+}
+```
+
+### rmcp Adapter Rule
+
+`rmcp` handlers should be thin adapters only:
+
+1. Extract `ToolActor` from trusted context/extensions (for example `Extension<ToolActor>`).
+2. Parse tool args into `ToolInput`.
+3. Call descriptor `run(&deps, &actor, input)`.
+4. Convert result/error back to MCP response shape.
+
+This keeps all domain tools on one generalized calling contract while still integrating with
+`rmcp` router mechanics.
+
 ## Phased Delivery
 
 ## Phase 0: Bootstrap
