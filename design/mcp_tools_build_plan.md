@@ -252,3 +252,4 @@ Acceptance:
 1. Implement migration + key repository interface.
 2. Implement `mcp_mount_router` with one mount and one tool.
 3. Implement key management endpoints and API key auth middleware.
+4. Maintain a runnable manual harness example at `examples/dev_mcp_server.rs` for smoke-testing key management + MCP tool calls with mocked auth.
