@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -96,7 +96,10 @@ impl DevMcpService {
         name = "whoami",
         description = "Return the authenticated actor resolved from API key auth."
     )]
-    async fn whoami(&self, Extension(actor): Extension<ToolActor>) -> String {
+    async fn whoami(&self, Extension(parts): Extension<Parts>) -> String {
+        let Some(actor) = parts.extensions.get::<ToolActor>() else {
+            return "missing ToolActor in request context".to_string();
+        };
         format!(
             "user_id={} mount={} api_key_id={} api_key_name={}",
             actor.user_id, actor.mcp_mount_name, actor.api_key_id, actor.api_key_name
