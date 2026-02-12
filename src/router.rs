@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use axum::extract::{Extension, Path, Request, State};
 use axum::http::StatusCode;
@@ -16,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use subseq_auth::prelude::{AuthenticatedUser, UserId};
 
 use crate::api_keys::{ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey};
-use crate::middleware::{ApiKeyMiddlewareState, ApiKeyRateLimiter, api_key_auth_middleware};
+use crate::middleware::{ApiKeyMiddlewareState, api_key_auth_middleware};
+use crate::rate_limits::{
+    ApiKeyRateLimitConfig, ApiKeyRateLimitStore, InMemoryApiKeyRateLimitStore,
+};
 
 #[derive(Debug, Clone)]
 pub struct McpMountProfile {
@@ -71,6 +75,25 @@ pub fn mcp_mount_router<S>(
 where
     S: RmcpService<RoleServer> + Clone + Send + Sync + 'static,
 {
+    mcp_mount_router_with_rate_limits(
+        profile,
+        service,
+        key_store,
+        Arc::new(InMemoryApiKeyRateLimitStore::default()),
+        ApiKeyRateLimitConfig::default(),
+    )
+}
+
+pub fn mcp_mount_router_with_rate_limits<S>(
+    profile: McpMountProfile,
+    service: S,
+    key_store: Arc<dyn ApiKeyStore>,
+    rate_limit_store: Arc<dyn ApiKeyRateLimitStore>,
+    rate_limit_config: ApiKeyRateLimitConfig,
+) -> Router
+where
+    S: RmcpService<RoleServer> + Clone + Send + Sync + 'static,
+{
     let base_path = profile.base_path();
     let key_list_path = format!("{base_path}/key");
     let key_named_path = format!("{base_path}/key/{{key_name}}");
@@ -89,7 +112,9 @@ where
     let auth_state = ApiKeyMiddlewareState {
         key_store,
         mount_name: profile.name.to_string(),
-        rate_limiter: Arc::new(ApiKeyRateLimiter::default()),
+        rate_limit_store,
+        rate_limit_config,
+        cleanup_counter: Arc::new(AtomicU64::new(0)),
     };
 
     let mcp_handler = {

@@ -14,6 +14,7 @@ use crate::api_keys::{
     GeneratedApiKey, ToolActor, generate_api_key, parse_presented_key, validate_expires_at,
     validate_key_name, verify_secret_hash,
 };
+use crate::rate_limits::{ApiKeyRateLimitConfig, ApiKeyRateLimitError, ApiKeyRateLimitStore};
 
 pub static MIGRATOR: Lazy<Migrator> = Lazy::new(|| {
     let mut migrator = sqlx::migrate!("./migrations");
@@ -43,6 +44,23 @@ impl SqlxApiKeyStore {
 
     pub fn pool(&self) -> Arc<PgPool> {
         Arc::clone(&self.pool)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SqlxApiKeyRateLimitStore {
+    pool: Arc<PgPool>,
+}
+
+impl SqlxApiKeyRateLimitStore {
+    pub fn new(pool: Arc<PgPool>) -> Self {
+        Self { pool }
+    }
+
+    pub fn from_pool(pool: &PgPool) -> Self {
+        Self {
+            pool: Arc::new(pool.clone()),
+        }
     }
 }
 
@@ -328,8 +346,128 @@ impl ApiKeyStore for SqlxApiKeyStore {
     }
 }
 
+#[async_trait]
+impl ApiKeyRateLimitStore for SqlxApiKeyRateLimitStore {
+    async fn is_blocked(&self, key: &str) -> Result<bool, ApiKeyRateLimitError> {
+        let blocked = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT COALESCE(blocked_until > NOW(), FALSE)
+            FROM agent.mcp_api_key_rate_limits
+            WHERE rate_limit_key = $1
+            "#,
+        )
+        .bind(key)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(map_sqlx_rate_limit_err)?
+        .unwrap_or(false);
+
+        Ok(blocked)
+    }
+
+    async fn record_success(&self, key: &str) -> Result<(), ApiKeyRateLimitError> {
+        sqlx::query(
+            r#"
+            DELETE FROM agent.mcp_api_key_rate_limits
+            WHERE rate_limit_key = $1
+            "#,
+        )
+        .bind(key)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(map_sqlx_rate_limit_err)?;
+        Ok(())
+    }
+
+    async fn record_failure(
+        &self,
+        key: &str,
+        config: &ApiKeyRateLimitConfig,
+    ) -> Result<(), ApiKeyRateLimitError> {
+        let failure_window_secs = config.failure_window.as_secs() as i64;
+        let block_duration_secs = config.block_duration.as_secs() as i64;
+        let max_failures = config.max_failures as i64;
+
+        sqlx::query(
+            r#"
+            INSERT INTO agent.mcp_api_key_rate_limits (
+                rate_limit_key,
+                failures,
+                window_started_at,
+                blocked_until,
+                updated_at
+            )
+            VALUES ($1, 1, NOW(), NULL, NOW())
+            ON CONFLICT (rate_limit_key) DO UPDATE
+            SET
+                failures = CASE
+                    WHEN agent.mcp_api_key_rate_limits.window_started_at <= (NOW() - make_interval(secs => $2))
+                    THEN 1
+                    ELSE agent.mcp_api_key_rate_limits.failures + 1
+                END,
+                window_started_at = CASE
+                    WHEN agent.mcp_api_key_rate_limits.window_started_at <= (NOW() - make_interval(secs => $2))
+                    THEN NOW()
+                    ELSE agent.mcp_api_key_rate_limits.window_started_at
+                END,
+                blocked_until = CASE
+                    WHEN (
+                        CASE
+                            WHEN agent.mcp_api_key_rate_limits.window_started_at <= (NOW() - make_interval(secs => $2))
+                            THEN 1
+                            ELSE agent.mcp_api_key_rate_limits.failures + 1
+                        END
+                    ) >= $3
+                    THEN NOW() + make_interval(secs => $4)
+                    ELSE NULL
+                END,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(key)
+        .bind(failure_window_secs)
+        .bind(max_failures)
+        .bind(block_duration_secs)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(map_sqlx_rate_limit_err)?;
+
+        Ok(())
+    }
+
+    async fn cleanup_expired(
+        &self,
+        config: &ApiKeyRateLimitConfig,
+    ) -> Result<(), ApiKeyRateLimitError> {
+        let cleanup_horizon_secs =
+            (config.failure_window + config.block_duration + config.block_duration).as_secs()
+                as i64;
+        sqlx::query(
+            r#"
+            DELETE FROM agent.mcp_api_key_rate_limits
+            WHERE (
+                blocked_until IS NULL
+                AND window_started_at <= NOW() - make_interval(secs => $1)
+            ) OR (
+                blocked_until IS NOT NULL
+                AND blocked_until <= NOW() - make_interval(secs => $1)
+            )
+            "#,
+        )
+        .bind(cleanup_horizon_secs)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(map_sqlx_rate_limit_err)?;
+        Ok(())
+    }
+}
+
 fn map_sqlx_err(err: sqlx::Error) -> ApiKeyStoreError {
     ApiKeyStoreError::Internal(err.to_string())
+}
+
+fn map_sqlx_rate_limit_err(err: sqlx::Error) -> ApiKeyRateLimitError {
+    ApiKeyRateLimitError::Backend(err.to_string())
 }
 
 fn conflict_on_unique(err: &sqlx::Error) -> Option<()> {
