@@ -8,6 +8,7 @@ A manually runnable dev server wiring:
 - API-key auth middleware on `/mcp/dev`
 - key management routes under `/mcp/dev/key*`
 - mocked authenticated user via `x-dev-*` headers for key management endpoints
+- tool actor propagation via `subseq_agents::ToolActorContext` extractor for rmcp tools
 
 No database is required for this example; it uses `InMemoryApiKeyStore`.
 

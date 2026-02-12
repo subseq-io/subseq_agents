@@ -5,7 +5,7 @@ pub mod router;
 
 pub use api_keys::{
     ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
-    InMemoryApiKeyStore, ToolActor,
+    InMemoryApiKeyStore, ToolActor, ToolActorContext,
 };
 pub use db::{SqlxApiKeyStore, create_agent_tables};
 pub use middleware::api_key_auth_middleware;

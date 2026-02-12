@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use argon2::Argon2;
@@ -10,6 +11,8 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
+use http::request::Parts;
+use rmcp::handler::server::common::{AsRequestContext, FromContextPart};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -26,6 +29,43 @@ pub struct ToolActor {
     pub mcp_mount_name: String,
     pub api_key_id: Uuid,
     pub api_key_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolActorContext(pub ToolActor);
+
+impl Deref for ToolActorContext {
+    type Target = ToolActor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<C> FromContextPart<C> for ToolActorContext
+where
+    C: AsRequestContext,
+{
+    fn from_context_part(context: &mut C) -> Result<Self, rmcp::ErrorData> {
+        let extensions = &context.as_request_context().extensions;
+
+        if let Some(actor) = extensions.get::<ToolActor>().cloned() {
+            return Ok(Self(actor));
+        }
+
+        let actor = extensions
+            .get::<Parts>()
+            .and_then(|parts| parts.extensions.get::<ToolActor>())
+            .cloned()
+            .ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("missing extension {}", std::any::type_name::<ToolActor>()),
+                    None,
+                )
+            })?;
+
+        Ok(Self(actor))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

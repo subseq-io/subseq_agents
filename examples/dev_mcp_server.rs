@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, request::Parts};
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -13,10 +13,9 @@ use axum::{Json, Router};
 use chrono::Utc;
 use rmcp::ServerHandler;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::tool::Extension;
 use rmcp::{tool, tool_handler, tool_router};
 use serde_json::json;
-use subseq_agents::{InMemoryApiKeyStore, McpMountProfile, ToolActor, mcp_mount_router};
+use subseq_agents::{InMemoryApiKeyStore, McpMountProfile, ToolActorContext, mcp_mount_router};
 use subseq_auth::prelude::{
     AuthenticatedUser, ClaimsVerificationError, CoreIdToken, CoreIdTokenClaims, OidcToken, UserId,
     ValidatesIdentity,
@@ -96,10 +95,7 @@ impl DevMcpService {
         name = "whoami",
         description = "Return the authenticated actor resolved from API key auth."
     )]
-    async fn whoami(&self, Extension(parts): Extension<Parts>) -> String {
-        let Some(actor) = parts.extensions.get::<ToolActor>() else {
-            return "missing ToolActor in request context".to_string();
-        };
+    async fn whoami(&self, actor: ToolActorContext) -> String {
         format!(
             "user_id={} mount={} api_key_id={} api_key_name={}",
             actor.user_id, actor.mcp_mount_name, actor.api_key_id, actor.api_key_name
