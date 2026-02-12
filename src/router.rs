@@ -18,7 +18,8 @@ use subseq_auth::prelude::{AuthenticatedUser, UserId};
 
 use crate::api_keys::{ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey};
 use crate::key_management::{
-    AllowAllKeyManagementAuthorizer, DynKeyManagementAuthorizer, KeyManagementOperation,
+    AllowAllKeyManagementAuthorizer, DynKeyManagementAuthorizer,
+    KeyManagementAuthorizationDecision, KeyManagementOperation,
 };
 use crate::middleware::{ApiKeyMiddlewareState, api_key_auth_middleware};
 use crate::rate_limits::{
@@ -274,13 +275,13 @@ async fn require_management_user(
                 .authorize(user_id, &state.mount_name, operation)
                 .await
             {
-                Ok(true) => Ok(user_id),
-                Ok(false) => Err((
-                    StatusCode::FORBIDDEN,
+                Ok(KeyManagementAuthorizationDecision::Allow) => Ok(user_id),
+                Ok(KeyManagementAuthorizationDecision::Deny(deny)) => Err((
+                    deny.status,
                     Json(serde_json::json!({
                         "error": {
-                            "code": "forbidden",
-                            "message": "Forbidden",
+                            "code": deny.code,
+                            "message": deny.message,
                         }
                     })),
                 )

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::http::StatusCode;
 use thiserror::Error;
 
 use subseq_auth::prelude::UserId;
@@ -10,6 +11,37 @@ pub enum KeyManagementOperation {
     List,
     Create,
     Revoke,
+}
+
+#[derive(Debug, Clone)]
+pub enum KeyManagementAuthorizationDecision {
+    Allow,
+    Deny(KeyManagementDeny),
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyManagementDeny {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
+impl KeyManagementDeny {
+    pub fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: "Forbidden",
+        }
+    }
+
+    pub fn payment_required() -> Self {
+        Self {
+            status: StatusCode::PAYMENT_REQUIRED,
+            code: "payment_required",
+            message: "Payment required",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -25,7 +57,7 @@ pub trait KeyManagementAuthorizer: Send + Sync + 'static {
         user_id: UserId,
         mcp_mount_name: &str,
         operation: KeyManagementOperation,
-    ) -> Result<bool, KeyManagementAuthorizationError>;
+    ) -> Result<KeyManagementAuthorizationDecision, KeyManagementAuthorizationError>;
 }
 
 #[derive(Debug, Default)]
@@ -38,8 +70,8 @@ impl KeyManagementAuthorizer for AllowAllKeyManagementAuthorizer {
         _user_id: UserId,
         _mcp_mount_name: &str,
         _operation: KeyManagementOperation,
-    ) -> Result<bool, KeyManagementAuthorizationError> {
-        Ok(true)
+    ) -> Result<KeyManagementAuthorizationDecision, KeyManagementAuthorizationError> {
+        Ok(KeyManagementAuthorizationDecision::Allow)
     }
 }
 

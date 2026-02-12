@@ -12,8 +12,9 @@ pub use api_keys::{
 pub use db::SqlxApiKeyRateLimitStore;
 pub use db::{SqlxApiKeyStore, create_agent_tables};
 pub use key_management::{
-    AllowAllKeyManagementAuthorizer, DynKeyManagementAuthorizer, KeyManagementAuthorizationError,
-    KeyManagementAuthorizer, KeyManagementOperation,
+    AllowAllKeyManagementAuthorizer, DynKeyManagementAuthorizer,
+    KeyManagementAuthorizationDecision, KeyManagementAuthorizationError, KeyManagementAuthorizer,
+    KeyManagementDeny, KeyManagementOperation,
 };
 pub use middleware::api_key_auth_middleware;
 pub use rate_limits::{
