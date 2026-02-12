@@ -2768,6 +2768,7 @@ dependencies = [
 [[package]]
 name = "subseq_auth"
 version = "0.1.0"
+source = "git+https://github.com/subseq-io/subseq_auth.git?branch=main#4731c29ff4f38bbaa03e739209713d5be9bb457a"
 dependencies = [
  "anyhow",
  "axum",
