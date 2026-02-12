@@ -73,7 +73,7 @@ where
 {
     let base_path = profile.base_path();
     let key_list_path = format!("{base_path}/key");
-    let key_named_path = format!("{base_path}/key/:key_name");
+    let key_named_path = format!("{base_path}/key/{{key_name}}");
 
     let streamable_service = StreamableHttpService::new(
         move || Ok(service.clone()),
