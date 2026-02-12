@@ -60,6 +60,8 @@ pub(crate) struct GeneratedApiKey {
 pub enum ApiKeyStoreError {
     #[error("Invalid key name")]
     InvalidKeyName,
+    #[error("Invalid expiry")]
+    InvalidExpiry,
     #[error("Key already exists")]
     Conflict,
     #[error("Unknown key")]
@@ -173,17 +175,17 @@ impl ApiKeyStore for InMemoryApiKeyStore {
         key_name: &str,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<CreatedApiKey, ApiKeyStoreError> {
-        let key_name = key_name.trim();
-        if key_name.is_empty() {
-            return Err(ApiKeyStoreError::InvalidKeyName);
-        }
+        let key_name = validate_key_name(key_name)?;
+        validate_expires_at(expires_at)?;
 
         let mut guard = self.inner.write().await;
+        let now = Utc::now();
         if guard.values().any(|row| {
             row.user_id == user_id
                 && row.mcp_mount_name == mcp_mount_name
                 && row.key_name == key_name
                 && row.revoked_at.is_none()
+                && row.expires_at.is_none_or(|expires_at| expires_at > now)
         }) {
             return Err(ApiKeyStoreError::Conflict);
         }
@@ -325,6 +327,34 @@ pub(crate) fn verify_secret_hash(
         .is_ok())
 }
 
+pub(crate) fn validate_key_name(key_name: &str) -> Result<&str, ApiKeyStoreError> {
+    let key_name = key_name.trim();
+    if key_name.is_empty() || key_name.len() > 64 {
+        return Err(ApiKeyStoreError::InvalidKeyName);
+    }
+
+    let mut chars = key_name.chars();
+    let first = chars.next().ok_or(ApiKeyStoreError::InvalidKeyName)?;
+    if !first.is_ascii_alphanumeric() {
+        return Err(ApiKeyStoreError::InvalidKeyName);
+    }
+
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
+        Ok(key_name)
+    } else {
+        Err(ApiKeyStoreError::InvalidKeyName)
+    }
+}
+
+pub(crate) fn validate_expires_at(
+    expires_at: Option<DateTime<Utc>>,
+) -> Result<(), ApiKeyStoreError> {
+    if expires_at.is_some_and(|value| value <= Utc::now()) {
+        return Err(ApiKeyStoreError::InvalidExpiry);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +411,24 @@ mod tests {
             .await
             .expect("auth should succeed");
         assert!(auth.is_none(), "mount mismatch should fail auth");
+    }
+
+    #[test]
+    fn key_name_validation_enforces_charset_and_length() {
+        assert!(validate_key_name("alpha").is_ok());
+        assert!(validate_key_name("alpha-1._beta").is_ok());
+        assert!(validate_key_name(" alpha ").is_ok());
+        assert!(validate_key_name("").is_err());
+        assert!(validate_key_name(" ").is_err());
+        assert!(validate_key_name("-alpha").is_err());
+        assert!(validate_key_name("a/b").is_err());
+        assert!(validate_key_name(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn expiry_validation_rejects_past_expiry() {
+        assert!(validate_expires_at(Some(Utc::now() - chrono::Duration::seconds(1))).is_err());
+        assert!(validate_expires_at(Some(Utc::now() + chrono::Duration::seconds(1))).is_ok());
+        assert!(validate_expires_at(None).is_ok());
     }
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use subseq_auth::prelude::{AuthenticatedUser, UserId};
 
 use crate::api_keys::{ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey};
-use crate::middleware::{ApiKeyMiddlewareState, api_key_auth_middleware};
+use crate::middleware::{ApiKeyMiddlewareState, ApiKeyRateLimiter, api_key_auth_middleware};
 
 #[derive(Debug, Clone)]
 pub struct McpMountProfile {
@@ -89,6 +89,7 @@ where
     let auth_state = ApiKeyMiddlewareState {
         key_store,
         mount_name: profile.name.to_string(),
+        rate_limiter: Arc::new(ApiKeyRateLimiter::default()),
     };
 
     let mcp_handler = {
@@ -175,6 +176,11 @@ fn map_store_error(err: ApiKeyStoreError) -> Response {
             StatusCode::BAD_REQUEST,
             "invalid_key_name",
             "Invalid key name",
+        ),
+        ApiKeyStoreError::InvalidExpiry => (
+            StatusCode::BAD_REQUEST,
+            "invalid_expires_at",
+            "expiresAt must be in the future",
         ),
         ApiKeyStoreError::Conflict => (StatusCode::CONFLICT, "key_conflict", "Key already exists"),
         ApiKeyStoreError::NotFound => (StatusCode::NOT_FOUND, "key_not_found", "Key not found"),

@@ -11,7 +11,8 @@ use subseq_auth::prelude::UserId;
 
 use crate::api_keys::{
     ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
-    GeneratedApiKey, ToolActor, generate_api_key, parse_presented_key, verify_secret_hash,
+    GeneratedApiKey, ToolActor, generate_api_key, parse_presented_key, validate_expires_at,
+    validate_key_name, verify_secret_hash,
 };
 
 pub static MIGRATOR: Lazy<Migrator> = Lazy::new(|| {
@@ -117,10 +118,27 @@ impl ApiKeyStore for SqlxApiKeyStore {
         key_name: &str,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<CreatedApiKey, ApiKeyStoreError> {
-        let key_name = key_name.trim();
-        if key_name.is_empty() {
-            return Err(ApiKeyStoreError::InvalidKeyName);
-        }
+        let key_name = validate_key_name(key_name)?;
+        validate_expires_at(expires_at)?;
+
+        sqlx::query(
+            r#"
+            UPDATE agent.mcp_api_keys
+            SET revoked_at = NOW()
+            WHERE user_id = $1
+              AND mcp_mount_name = $2
+              AND key_name = $3
+              AND revoked_at IS NULL
+              AND expires_at IS NOT NULL
+              AND expires_at <= NOW()
+            "#,
+        )
+        .bind(user_id.0)
+        .bind(mcp_mount_name)
+        .bind(key_name)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(map_sqlx_err)?;
 
         let GeneratedApiKey {
             id,
@@ -226,6 +244,7 @@ impl ApiKeyStore for SqlxApiKeyStore {
             None => return Ok(None),
         };
 
+        let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
         let row = sqlx::query_as::<_, ApiKeyRow>(
             r#"
             SELECT
@@ -242,11 +261,12 @@ impl ApiKeyStore for SqlxApiKeyStore {
             FROM agent.mcp_api_keys
             WHERE id = $1
               AND mcp_mount_name = $2
+            FOR UPDATE
             "#,
         )
         .bind(key_id)
         .bind(mcp_mount_name)
-        .fetch_optional(self.pool.as_ref())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
 
@@ -267,23 +287,43 @@ impl ApiKeyStore for SqlxApiKeyStore {
             return Ok(None);
         }
 
-        sqlx::query(
+        let updated_row = sqlx::query_as::<_, ApiKeyRow>(
             r#"
             UPDATE agent.mcp_api_keys
             SET last_used_at = NOW()
             WHERE id = $1
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > NOW())
+            RETURNING
+                id,
+                user_id,
+                mcp_mount_name,
+                key_name,
+                secret_hash,
+                secret_prefix,
+                created_at,
+                last_used_at,
+                expires_at,
+                revoked_at
             "#,
         )
         .bind(row.id)
-        .execute(self.pool.as_ref())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_sqlx_err)?;
 
+        let Some(updated_row) = updated_row else {
+            tx.rollback().await.map_err(map_sqlx_err)?;
+            return Ok(None);
+        };
+
+        tx.commit().await.map_err(map_sqlx_err)?;
+
         Ok(Some(ToolActor {
-            user_id: UserId(row.user_id),
-            mcp_mount_name: row.mcp_mount_name,
-            api_key_id: row.id,
-            api_key_name: row.key_name,
+            user_id: UserId(updated_row.user_id),
+            mcp_mount_name: updated_row.mcp_mount_name,
+            api_key_id: updated_row.id,
+            api_key_name: updated_row.key_name,
         }))
     }
 }
@@ -300,5 +340,149 @@ fn conflict_on_unique(err: &sqlx::Error) -> Option<()> {
         Some(())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+
+    use chrono::Duration as ChronoDuration;
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    async fn setup_test_db(pool: &PgPool) {
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS auth")
+            .execute(pool)
+            .await
+            .expect("create auth schema");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS auth.users (
+                id uuid PRIMARY KEY
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create auth.users");
+        create_agent_tables(pool)
+            .await
+            .expect("run agent migrations");
+    }
+
+    async fn insert_user(pool: &PgPool, user_id: UserId) {
+        sqlx::query("INSERT INTO auth.users (id) VALUES ($1)")
+            .bind(user_id.0)
+            .execute(pool)
+            .await
+            .expect("insert user");
+    }
+
+    async fn test_pool() -> Option<PgPool> {
+        let database_url = match env::var("DATABASE_URL") {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect postgres for integration test");
+        Some(pool)
+    }
+
+    #[tokio::test]
+    async fn create_key_rejects_past_expiry() {
+        let Some(pool) = test_pool().await else {
+            eprintln!("skipping SQLx integration test: DATABASE_URL is not set");
+            return;
+        };
+        setup_test_db(&pool).await;
+        let store = SqlxApiKeyStore::from_pool(&pool);
+        let user_id = UserId(Uuid::new_v4());
+        insert_user(&pool, user_id).await;
+
+        let result = store
+            .create_key(
+                user_id,
+                "graph",
+                "default",
+                Some(Utc::now() - ChronoDuration::minutes(1)),
+            )
+            .await;
+        assert!(matches!(result, Err(ApiKeyStoreError::InvalidExpiry)));
+    }
+
+    #[tokio::test]
+    async fn expired_key_name_is_reusable() {
+        let Some(pool) = test_pool().await else {
+            eprintln!("skipping SQLx integration test: DATABASE_URL is not set");
+            return;
+        };
+        setup_test_db(&pool).await;
+        let store = SqlxApiKeyStore::from_pool(&pool);
+        let user_id = UserId(Uuid::new_v4());
+        insert_user(&pool, user_id).await;
+
+        let created = store
+            .create_key(
+                user_id,
+                "graph",
+                "default",
+                Some(Utc::now() + ChronoDuration::minutes(5)),
+            )
+            .await
+            .expect("first create succeeds");
+
+        sqlx::query(
+            "UPDATE agent.mcp_api_keys SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+        )
+        .bind(created.metadata.id)
+        .execute(&pool)
+        .await
+        .expect("force key expiry");
+
+        let recreated = store
+            .create_key(
+                user_id,
+                "graph",
+                "default",
+                Some(Utc::now() + ChronoDuration::minutes(5)),
+            )
+            .await
+            .expect("expired key name should be reusable");
+
+        assert_eq!(recreated.metadata.key_name, "default");
+    }
+
+    #[tokio::test]
+    async fn revoked_key_cannot_authenticate() {
+        let Some(pool) = test_pool().await else {
+            eprintln!("skipping SQLx integration test: DATABASE_URL is not set");
+            return;
+        };
+        setup_test_db(&pool).await;
+        let store = SqlxApiKeyStore::from_pool(&pool);
+        let user_id = UserId(Uuid::new_v4());
+        insert_user(&pool, user_id).await;
+
+        let created = store
+            .create_key(user_id, "graph", "default", None)
+            .await
+            .expect("create succeeds");
+        store
+            .revoke_key(user_id, "graph", "default")
+            .await
+            .expect("revoke succeeds");
+
+        let auth = store
+            .authenticate_key("graph", &created.plaintext_key)
+            .await
+            .expect("auth query succeeds");
+        assert!(auth.is_none());
     }
 }
