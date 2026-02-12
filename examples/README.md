@@ -9,6 +9,7 @@ A manually runnable dev server wiring:
 - key management routes under `/mcp/dev/key*`
 - mocked authenticated user via `x-dev-*` headers for key management endpoints
 - tool actor propagation via `subseq_agents::ToolActorContext` extractor for rmcp tools
+- pluggable key-management authorization via `KeyManagementAuthorizer` (default allow-all)
 
 No database is required for this example; it uses `InMemoryApiKeyStore`.
 

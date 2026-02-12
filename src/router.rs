@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use subseq_auth::prelude::{AuthenticatedUser, UserId};
 
 use crate::api_keys::{ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey};
+use crate::key_management::{
+    AllowAllKeyManagementAuthorizer, DynKeyManagementAuthorizer, KeyManagementOperation,
+};
 use crate::middleware::{ApiKeyMiddlewareState, api_key_auth_middleware};
 use crate::rate_limits::{
     ApiKeyRateLimitConfig, ApiKeyRateLimitStore, InMemoryApiKeyRateLimitStore,
@@ -41,6 +44,7 @@ impl McpMountProfile {
 struct KeyRouteState {
     key_store: Arc<dyn ApiKeyStore>,
     mount_name: String,
+    key_management_authorizer: DynKeyManagementAuthorizer,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,12 +79,13 @@ pub fn mcp_mount_router<S>(
 where
     S: RmcpService<RoleServer> + Clone + Send + Sync + 'static,
 {
-    mcp_mount_router_with_rate_limits(
+    mcp_mount_router_with_controls(
         profile,
         service,
         key_store,
         Arc::new(InMemoryApiKeyRateLimitStore::default()),
         ApiKeyRateLimitConfig::default(),
+        Arc::new(AllowAllKeyManagementAuthorizer),
     )
 }
 
@@ -90,6 +95,27 @@ pub fn mcp_mount_router_with_rate_limits<S>(
     key_store: Arc<dyn ApiKeyStore>,
     rate_limit_store: Arc<dyn ApiKeyRateLimitStore>,
     rate_limit_config: ApiKeyRateLimitConfig,
+) -> Router
+where
+    S: RmcpService<RoleServer> + Clone + Send + Sync + 'static,
+{
+    mcp_mount_router_with_controls(
+        profile,
+        service,
+        key_store,
+        rate_limit_store,
+        rate_limit_config,
+        Arc::new(AllowAllKeyManagementAuthorizer),
+    )
+}
+
+pub fn mcp_mount_router_with_controls<S>(
+    profile: McpMountProfile,
+    service: S,
+    key_store: Arc<dyn ApiKeyStore>,
+    rate_limit_store: Arc<dyn ApiKeyRateLimitStore>,
+    rate_limit_config: ApiKeyRateLimitConfig,
+    key_management_authorizer: DynKeyManagementAuthorizer,
 ) -> Router
 where
     S: RmcpService<RoleServer> + Clone + Send + Sync + 'static,
@@ -107,6 +133,7 @@ where
     let key_state = KeyRouteState {
         key_store: Arc::clone(&key_store),
         mount_name: profile.name.to_string(),
+        key_management_authorizer,
     };
 
     let auth_state = ApiKeyMiddlewareState {
@@ -145,10 +172,11 @@ async fn list_api_keys_handler(
     State(state): State<KeyRouteState>,
     auth_user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    let user_id = match require_management_user(auth_user) {
-        Ok(user_id) => user_id,
-        Err(response) => return response,
-    };
+    let user_id =
+        match require_management_user(auth_user, &state, KeyManagementOperation::List).await {
+            Ok(user_id) => user_id,
+            Err(response) => return response,
+        };
     match state.key_store.list_keys(user_id, &state.mount_name).await {
         Ok(keys) => Json(ListApiKeysResponse { keys }).into_response(),
         Err(err) => map_store_error(err),
@@ -161,10 +189,11 @@ async fn create_api_key_handler(
     auth_user: Option<Extension<AuthenticatedUser>>,
     payload: Option<Json<CreateApiKeyRequest>>,
 ) -> Response {
-    let user_id = match require_management_user(auth_user) {
-        Ok(user_id) => user_id,
-        Err(response) => return response,
-    };
+    let user_id =
+        match require_management_user(auth_user, &state, KeyManagementOperation::Create).await {
+            Ok(user_id) => user_id,
+            Err(response) => return response,
+        };
     let expires_at = payload.and_then(|value| value.0.expires_at);
     match state
         .key_store
@@ -181,10 +210,11 @@ async fn revoke_api_key_handler(
     Path(key_name): Path<String>,
     auth_user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    let user_id = match require_management_user(auth_user) {
-        Ok(user_id) => user_id,
-        Err(response) => return response,
-    };
+    let user_id =
+        match require_management_user(auth_user, &state, KeyManagementOperation::Revoke).await {
+            Ok(user_id) => user_id,
+            Err(response) => return response,
+        };
     match state
         .key_store
         .revoke_key(user_id, &state.mount_name, &key_name)
@@ -231,11 +261,45 @@ fn map_store_error(err: ApiKeyStoreError) -> Response {
         .into_response()
 }
 
-fn require_management_user(
+async fn require_management_user(
     auth_user: Option<Extension<AuthenticatedUser>>,
+    state: &KeyRouteState,
+    operation: KeyManagementOperation,
 ) -> Result<UserId, Response> {
     match auth_user {
-        Some(Extension(auth_user)) => Ok(auth_user.id()),
+        Some(Extension(auth_user)) => {
+            let user_id = auth_user.id();
+            match state
+                .key_management_authorizer
+                .authorize(user_id, &state.mount_name, operation)
+                .await
+            {
+                Ok(true) => Ok(user_id),
+                Ok(false) => Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": {
+                            "code": "forbidden",
+                            "message": "Forbidden",
+                        }
+                    })),
+                )
+                    .into_response()),
+                Err(err) => {
+                    tracing::error!("key management authorization failed: {err}");
+                    Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": {
+                                "code": "internal_error",
+                                "message": "Internal server error",
+                            }
+                        })),
+                    )
+                        .into_response())
+                }
+            }
+        }
         None => Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
