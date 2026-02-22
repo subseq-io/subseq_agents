@@ -13,6 +13,7 @@ A manually runnable dev server wiring:
 - frontend static hosting with SPA fallback (`ServeDir(...).fallback(index.html)`)
 - agent markdown negotiation via `markdown_negotiation_layer` + `markdown_static_service`
 - `__agent` namespace served at top-level `/__agent/*` (outside `/api/v1`)
+- top-level `/llms.txt` generated from manifest routes to list markdown files
 
 No database is required for this example; it uses `InMemoryApiKeyStore`.
 
@@ -105,4 +106,11 @@ Private routes in this example emit metadata-only markdown:
 curl -i -sS \
   http://127.0.0.1:4020/portal/sessions \
   -H 'accept: text/markdown'
+```
+
+### 6) Inspect `llms.txt` markdown directory listing
+
+```bash
+curl -i -sS \
+  http://127.0.0.1:4020/llms.txt
 ```

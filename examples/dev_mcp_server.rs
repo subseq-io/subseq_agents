@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -19,6 +19,7 @@ use serde_json::json;
 use subseq_agents::{
     AgentManifest, AgentMarkdownConfig, InMemoryApiKeyStore, McpMountProfile, ToolActorContext,
     load_manifest, markdown_negotiation_layer, markdown_static_service, mcp_mount_router,
+    render_llms_txt,
 };
 use subseq_auth::prelude::{
     AuthenticatedUser, ClaimsVerificationError, CoreIdToken, CoreIdTokenClaims, OidcToken, UserId,
@@ -173,6 +174,7 @@ async fn main() -> anyhow::Result<()> {
             AgentManifest::empty()
         }
     };
+    let llms_txt = Arc::new(render_llms_txt(&markdown_manifest));
 
     let spa =
         ServeDir::new(&frontend_root).fallback(ServeFile::new(frontend_root.join("index.html")));
@@ -183,6 +185,21 @@ async fn main() -> anyhow::Result<()> {
             Router::new().route("/healthz", get(health_handler)),
         )
         .nest(API_BASE_PATH, protected_api_v1)
+        .route(
+            "/llms.txt",
+            get({
+                let llms_txt = Arc::clone(&llms_txt);
+                move || {
+                    let llms_txt = Arc::clone(&llms_txt);
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                            llms_txt.as_ref().clone(),
+                        )
+                    }
+                }
+            }),
+        )
         // Frontend-owned markdown artifacts are exposed at top-level `/__agent/*`,
         // not under `/api/v1`.
         .route_service(
@@ -204,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
     println!("management auth shim headers: x-dev-user-id, x-dev-email, x-dev-username");
     println!("mcp mount path: /api/v1/mcp/dev");
     println!("agent namespace path (top-level): /__agent/*");
+    println!("llms directory path (top-level): /llms.txt");
     println!("frontend root: {}", frontend_root.display());
     println!("markdown demo paths: / and /portal/sessions (Accept: text/markdown)");
     println!();

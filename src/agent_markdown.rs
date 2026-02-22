@@ -101,6 +101,55 @@ impl AgentManifest {
     }
 }
 
+pub fn render_llms_txt(manifest: &AgentManifest) -> String {
+    let mut routes: Vec<&AgentRouteEntry> = manifest.routes().collect();
+    routes.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut output = String::new();
+    output.push_str("# llms.txt\n");
+    output.push_str("# routePath<TAB>markdownPath<TAB>visibility<TAB>title<TAB>summary\n");
+    if let Some(app) = &manifest.app {
+        output.push_str("# app: ");
+        output.push_str(&sanitize_llms_txt_field(app));
+        output.push('\n');
+    }
+    if let Some(generated_at) = &manifest.generated_at {
+        output.push_str("# generatedAt: ");
+        output.push_str(&sanitize_llms_txt_field(generated_at));
+        output.push('\n');
+    }
+
+    for route in routes {
+        output.push_str(&route.path);
+        output.push('\t');
+        output.push_str(&route.markdown_path);
+        output.push('\t');
+        output.push_str(match route.visibility {
+            RouteVisibility::Public => "public",
+            RouteVisibility::PrivateMetadata => "private_metadata",
+        });
+        output.push('\t');
+        output.push_str(
+            &route
+                .title
+                .as_ref()
+                .map(|value| sanitize_llms_txt_field(value))
+                .unwrap_or_default(),
+        );
+        output.push('\t');
+        output.push_str(
+            &route
+                .summary
+                .as_ref()
+                .map(|value| sanitize_llms_txt_field(value))
+                .unwrap_or_default(),
+        );
+        output.push('\n');
+    }
+
+    output
+}
+
 #[derive(Debug, Error)]
 pub enum ManifestError {
     #[error("failed to read manifest at {path}: {source}")]
@@ -499,6 +548,21 @@ fn append_vary_accept(headers: &mut HeaderMap) {
     }
 }
 
+fn sanitize_llms_txt_field(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch == '\t' || ch == '\n' || ch == '\r' {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -515,7 +579,7 @@ mod tests {
 
     use super::{
         AgentMarkdownConfig, ManifestError, MarkdownMissBehavior, load_manifest,
-        markdown_negotiation_layer, markdown_static_service,
+        markdown_negotiation_layer, markdown_static_service, render_llms_txt,
     };
 
     #[test]
@@ -688,6 +752,26 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("Accept")
         );
+    }
+
+    #[test]
+    fn render_llms_txt_lists_manifest_routes() {
+        let (_dir, _config, manifest) = fixture();
+        let llms = render_llms_txt(&manifest);
+
+        let root = llms
+            .lines()
+            .find(|line| line.starts_with("/\t"))
+            .expect("contains root route line");
+        assert!(root.contains("/__agent/pages/index.md"));
+        assert!(root.contains("\tpublic\t"));
+
+        let portal = llms
+            .lines()
+            .find(|line| line.starts_with("/portal/sessions\t"))
+            .expect("contains portal route line");
+        assert!(portal.contains("/__agent/pages/private/portal-sessions.md"));
+        assert!(portal.contains("\tprivate_metadata\t"));
     }
 
     fn build_app(
