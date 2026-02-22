@@ -12,6 +12,7 @@ A manually runnable dev server wiring:
 - pluggable key-management authorization via `KeyManagementAuthorizer` (default allow-all), including custom deny responses (e.g., `403 forbidden` or `402 payment_required`)
 - frontend static hosting with SPA fallback (`ServeDir(...).fallback(index.html)`)
 - agent markdown negotiation via `markdown_negotiation_layer` + `markdown_static_service`
+- `__agent` namespace served at top-level `/__agent/*` (outside `/api/v1`)
 
 No database is required for this example; it uses `InMemoryApiKeyStore`.
 
@@ -83,7 +84,7 @@ curl -sS -X POST \
 
 ### 5) Exercise markdown negotiation
 
-`Accept: text/markdown` resolves through `__agent/routes.json` and serves markdown files.
+`Accept: text/markdown` resolves through top-level `__agent/routes.json` and serves markdown files.
 
 ```bash
 curl -i -sS \

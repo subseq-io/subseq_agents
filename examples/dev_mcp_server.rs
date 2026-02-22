@@ -34,6 +34,8 @@ const DEV_ID_TOKEN: &str = concat!(
     "IyNDQwMDMyMCIsInRmYV9tZXRob2QiOiJ1MmYifQ.",
     "aW52YWxpZF9zaWduYXR1cmU"
 );
+const API_BASE_PATH: &str = "/api/v1";
+const AGENT_NAMESPACE_PATH: &str = "/__agent/{*path}";
 
 #[derive(Clone)]
 struct DevAuthConfig {
@@ -177,11 +179,16 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .nest(
-            "/api/v1",
+            API_BASE_PATH,
             Router::new().route("/healthz", get(health_handler)),
         )
-        .nest("/api/v1", protected_api_v1)
-        .route_service("/__agent/{*path}", markdown_static_service(&frontend_root))
+        .nest(API_BASE_PATH, protected_api_v1)
+        // Frontend-owned markdown artifacts are exposed at top-level `/__agent/*`,
+        // not under `/api/v1`.
+        .route_service(
+            AGENT_NAMESPACE_PATH,
+            markdown_static_service(&frontend_root),
+        )
         .fallback_service(spa)
         .layer(markdown_negotiation_layer(
             Arc::new(markdown_manifest),
@@ -193,9 +200,10 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind listener on {}", bind_addr))?;
 
     println!("subseq_agents dev example listening on http://{bind_addr}");
-    println!("base path: /api/v1");
+    println!("api base path: {API_BASE_PATH}");
     println!("management auth shim headers: x-dev-user-id, x-dev-email, x-dev-username");
     println!("mcp mount path: /api/v1/mcp/dev");
+    println!("agent namespace path (top-level): /__agent/*");
     println!("frontend root: {}", frontend_root.display());
     println!("markdown demo paths: / and /portal/sessions (Accept: text/markdown)");
     println!();
