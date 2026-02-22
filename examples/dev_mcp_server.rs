@@ -1,5 +1,6 @@
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -15,11 +16,15 @@ use rmcp::ServerHandler;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::{tool, tool_handler, tool_router};
 use serde_json::json;
-use subseq_agents::{InMemoryApiKeyStore, McpMountProfile, ToolActorContext, mcp_mount_router};
+use subseq_agents::{
+    AgentManifest, AgentMarkdownConfig, InMemoryApiKeyStore, McpMountProfile, ToolActorContext,
+    load_manifest, markdown_negotiation_layer, markdown_static_service, mcp_mount_router,
+};
 use subseq_auth::prelude::{
     AuthenticatedUser, ClaimsVerificationError, CoreIdToken, CoreIdTokenClaims, OidcToken, UserId,
     ValidatesIdentity,
 };
+use tower_http::services::{ServeDir, ServeFile};
 use uuid::Uuid;
 
 const DEV_ID_TOKEN: &str = concat!(
@@ -149,12 +154,39 @@ async fn main() -> anyhow::Result<()> {
             dev_identity_middleware,
         ));
 
+    let frontend_root = env::var("SUBSEQ_AGENTS_EXAMPLE_FRONTEND_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("examples/fixtures/agent_frontend"));
+    let markdown_config = AgentMarkdownConfig::default_for(frontend_root.clone());
+    let markdown_manifest = match load_manifest(&markdown_config) {
+        Ok(manifest) => {
+            println!(
+                "agent markdown manifest loaded: {}",
+                frontend_root.join("__agent/routes.json").display()
+            );
+            manifest
+        }
+        Err(err) => {
+            eprintln!("agent markdown manifest unavailable (markdown disabled): {err}");
+            AgentManifest::empty()
+        }
+    };
+
+    let spa =
+        ServeDir::new(&frontend_root).fallback(ServeFile::new(frontend_root.join("index.html")));
+
     let app = Router::new()
         .nest(
             "/api/v1",
             Router::new().route("/healthz", get(health_handler)),
         )
-        .nest("/api/v1", protected_api_v1);
+        .nest("/api/v1", protected_api_v1)
+        .route_service("/__agent/{*path}", markdown_static_service(&frontend_root))
+        .fallback_service(spa)
+        .layer(markdown_negotiation_layer(
+            Arc::new(markdown_manifest),
+            markdown_config,
+        ));
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -164,6 +196,8 @@ async fn main() -> anyhow::Result<()> {
     println!("base path: /api/v1");
     println!("management auth shim headers: x-dev-user-id, x-dev-email, x-dev-username");
     println!("mcp mount path: /api/v1/mcp/dev");
+    println!("frontend root: {}", frontend_root.display());
+    println!("markdown demo paths: / and /portal/sessions (Accept: text/markdown)");
     println!();
     println!("Quickstart:");
     println!("1) Create key:");

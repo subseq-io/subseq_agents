@@ -10,6 +10,8 @@ A manually runnable dev server wiring:
 - mocked authenticated user via `x-dev-*` headers for key management endpoints
 - tool actor propagation via `subseq_agents::ToolActorContext` extractor for rmcp tools
 - pluggable key-management authorization via `KeyManagementAuthorizer` (default allow-all), including custom deny responses (e.g., `403 forbidden` or `402 payment_required`)
+- frontend static hosting with SPA fallback (`ServeDir(...).fallback(index.html)`)
+- agent markdown negotiation via `markdown_negotiation_layer` + `markdown_static_service`
 
 No database is required for this example; it uses `InMemoryApiKeyStore`.
 
@@ -20,6 +22,8 @@ cargo run --example dev_mcp_server
 ```
 
 Default bind: `127.0.0.1:4020`
+
+Default frontend artifact root: `examples/fixtures/agent_frontend` (override with `SUBSEQ_AGENTS_EXAMPLE_FRONTEND_PATH`)
 
 ### 1) Create an API key
 
@@ -75,4 +79,29 @@ curl -sS -X POST \
   -H "x-api-key: $API_KEY" \
   -H "mcp-session-id: $SESSION_ID" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"whoami","arguments":{}}}'
+```
+
+### 5) Exercise markdown negotiation
+
+`Accept: text/markdown` resolves through `__agent/routes.json` and serves markdown files.
+
+```bash
+curl -i -sS \
+  http://127.0.0.1:4020/ \
+  -H 'accept: text/markdown'
+```
+
+`Accept: text/html` (or no Accept) keeps normal SPA behavior:
+
+```bash
+curl -i -sS \
+  http://127.0.0.1:4020/
+```
+
+Private routes in this example emit metadata-only markdown:
+
+```bash
+curl -i -sS \
+  http://127.0.0.1:4020/portal/sessions \
+  -H 'accept: text/markdown'
 ```

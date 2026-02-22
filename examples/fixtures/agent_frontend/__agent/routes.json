@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "app": "subseq_agents-example",
+  "generatedAt": "2026-02-22T02:10:00.000Z",
+  "routes": [
+    {
+      "path": "/",
+      "visibility": "public",
+      "markdownPath": "/__agent/pages/index.md",
+      "title": "Example Home",
+      "summary": "Public markdown route."
+    },
+    {
+      "path": "/portal/sessions",
+      "visibility": "private_metadata",
+      "markdownPath": "/__agent/pages/private/portal-sessions.md",
+      "title": "Portal Sessions",
+      "summary": "Authenticated route metadata only."
+    }
+  ]
+}
