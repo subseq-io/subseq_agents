@@ -1,3 +1,4 @@
+pub mod agent_markdown;
 pub mod api_keys;
 pub mod db;
 pub mod key_management;
@@ -5,6 +6,10 @@ pub mod middleware;
 pub mod rate_limits;
 pub mod router;
 
+pub use agent_markdown::{
+    AgentManifest, AgentMarkdownConfig, AgentRouteEntry, ManifestError, MarkdownMissBehavior,
+    RouteVisibility, load_manifest, markdown_negotiation_layer, markdown_static_service,
+};
 pub use api_keys::{
     ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
     InMemoryApiKeyStore, ToolActor, ToolActorContext,
