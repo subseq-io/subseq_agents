@@ -62,7 +62,7 @@ async fn expired_key_name_is_reusable() {
     sqlx::query(
         "UPDATE agent.mcp_api_keys SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
     )
-    .bind(created.metadata.id)
+    .bind(created.metadata.id.0)
     .execute(&db.pool)
     .await
     .expect("force key expiry");

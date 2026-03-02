@@ -10,7 +10,7 @@ use uuid::Uuid;
 use subseq_auth::prelude::UserId;
 
 use crate::api_keys::{
-    ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
+    ApiKeyAuthResult, ApiKeyId, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
     GeneratedApiKey, ToolActor, generate_api_key, parse_presented_key, validate_expires_at,
     validate_key_name, verify_secret_hash,
 };
@@ -81,7 +81,7 @@ struct ApiKeyRow {
 impl ApiKeyRow {
     fn to_metadata(&self) -> ApiKeyMetadata {
         ApiKeyMetadata {
-            id: self.id,
+            id: ApiKeyId(self.id),
             key_name: self.key_name.clone(),
             created_at: self.created_at,
             last_used_at: self.last_used_at,
@@ -164,7 +164,7 @@ impl ApiKeyStore for SqlxApiKeyStore {
             secret_hash,
             secret_prefix,
             ..
-        } = generate_api_key(Uuid::new_v4())?;
+        } = generate_api_key(ApiKeyId(Uuid::new_v4()))?;
 
         let row = sqlx::query_as::<_, ApiKeyRow>(
             r#"
@@ -191,7 +191,7 @@ impl ApiKeyStore for SqlxApiKeyStore {
                 revoked_at
             "#,
         )
-        .bind(id)
+        .bind(id.0)
         .bind(user_id.0)
         .bind(mcp_mount_name)
         .bind(key_name)
@@ -282,7 +282,7 @@ impl ApiKeyStore for SqlxApiKeyStore {
             FOR UPDATE
             "#,
         )
-        .bind(key_id)
+        .bind(key_id.0)
         .bind(mcp_mount_name)
         .fetch_optional(&mut *tx)
         .await
@@ -340,7 +340,7 @@ impl ApiKeyStore for SqlxApiKeyStore {
         Ok(Some(ToolActor {
             user_id: UserId(updated_row.user_id),
             mcp_mount_name: updated_row.mcp_mount_name,
-            api_key_id: updated_row.id,
+            api_key_id: ApiKeyId(updated_row.id),
             api_key_name: updated_row.key_name,
         }))
     }

@@ -14,6 +14,8 @@ use chrono::{DateTime, Utc};
 use http::request::Parts;
 use rmcp::handler::server::common::{AsRequestContext, FromContextPart};
 use serde::Serialize;
+use subseq_util::prelude::{FromTypedUuid, TypedUuid};
+use subseq_util::uuid_id_type;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -22,12 +24,14 @@ use subseq_auth::prelude::UserId;
 
 pub(crate) const API_KEY_PREFIX: &str = "mcpk_";
 
+uuid_id_type!(ApiKeyId, "mcp_id");
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolActor {
     pub user_id: UserId,
     pub mcp_mount_name: String,
-    pub api_key_id: Uuid,
+    pub api_key_id: ApiKeyId,
     pub api_key_name: String,
 }
 
@@ -71,7 +75,7 @@ where
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKeyMetadata {
-    pub id: Uuid,
+    pub id: ApiKeyId,
     pub key_name: String,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
@@ -90,7 +94,7 @@ pub struct CreatedApiKey {
 pub type ApiKeyAuthResult = Option<ToolActor>;
 
 pub(crate) struct GeneratedApiKey {
-    pub id: Uuid,
+    pub id: ApiKeyId,
     pub plaintext_key: String,
     pub secret_hash: String,
     pub secret_prefix: String,
@@ -142,7 +146,7 @@ pub trait ApiKeyStore: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub struct InMemoryApiKeyStore {
-    inner: Arc<RwLock<HashMap<Uuid, StoredApiKey>>>,
+    inner: Arc<RwLock<HashMap<ApiKeyId, StoredApiKey>>>,
 }
 
 impl InMemoryApiKeyStore {
@@ -161,7 +165,7 @@ impl Default for InMemoryApiKeyStore {
 
 #[derive(Debug, Clone)]
 struct StoredApiKey {
-    id: Uuid,
+    id: ApiKeyId,
     user_id: UserId,
     mcp_mount_name: String,
     key_name: String,
@@ -236,7 +240,7 @@ impl ApiKeyStore for InMemoryApiKeyStore {
             secret_hash,
             secret_prefix,
             ..
-        } = generate_api_key(Uuid::new_v4())?;
+        } = generate_api_key(ApiKeyId(Uuid::new_v4()))?;
 
         let row = StoredApiKey {
             id,
@@ -324,18 +328,19 @@ impl ApiKeyStore for InMemoryApiKeyStore {
     }
 }
 
-pub(crate) fn parse_presented_key(presented_key: &str) -> Option<(Uuid, &str)> {
+pub(crate) fn parse_presented_key(presented_key: &str) -> Option<(ApiKeyId, &str)> {
     let token = presented_key.trim();
     let token = token.strip_prefix(API_KEY_PREFIX)?;
     let (id, secret) = token.split_once('.')?;
-    let id = Uuid::parse_str(id).ok()?;
+    let id = TypedUuid::<ApiKeyId>::from_str(id).ok()?;
+    let id = ApiKeyId::from_typed_uuid(id);
     if secret.is_empty() {
         return None;
     }
     Some((id, secret))
 }
 
-pub(crate) fn generate_api_key(id: Uuid) -> Result<GeneratedApiKey, ApiKeyStoreError> {
+pub(crate) fn generate_api_key(id: ApiKeyId) -> Result<GeneratedApiKey, ApiKeyStoreError> {
     let mut secret_bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut secret_bytes);
     let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
