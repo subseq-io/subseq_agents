@@ -13,7 +13,7 @@ pub use agent_markdown::{
 };
 pub use api_keys::{
     ApiKeyAuthResult, ApiKeyMetadata, ApiKeyStore, ApiKeyStoreError, CreatedApiKey,
-    InMemoryApiKeyStore, ToolActor, ToolActorContext,
+    InMemoryApiKeyStore, ToolActor, ToolActorContext, tool_actor_from_extensions,
 };
 pub use db::SqlxApiKeyRateLimitStore;
 pub use db::{SqlxApiKeyStore, create_agent_tables};
@@ -30,3 +30,5 @@ pub use router::{
     McpMountProfile, mcp_mount_router, mcp_mount_router_with_controls,
     mcp_mount_router_with_rate_limits,
 };
+
+pub mod events;

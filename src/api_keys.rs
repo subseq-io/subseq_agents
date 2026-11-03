@@ -51,25 +51,22 @@ where
     C: AsRequestContext,
 {
     fn from_context_part(context: &mut C) -> Result<Self, rmcp::ErrorData> {
-        let extensions = &context.as_request_context().extensions;
+        tool_actor_from_extensions(&context.as_request_context().extensions)
+            .map(Self)
+            .ok_or_else(|| {
+                rmcp::ErrorData::invalid_params("Reconnect your account to continue.", None)
+            })
+    }
+}
 
-        if let Some(actor) = extensions.get::<ToolActor>().cloned() {
-            return Ok(Self(actor));
-        }
-
-        let actor = extensions
+/// Resolve the authenticated actor from either direct request extensions or the HTTP transport's Parts.
+pub fn tool_actor_from_extensions(extensions: &rmcp::model::Extensions) -> Option<ToolActor> {
+    extensions.get::<ToolActor>().cloned().or_else(|| {
+        extensions
             .get::<Parts>()
             .and_then(|parts| parts.extensions.get::<ToolActor>())
             .cloned()
-            .ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
-                    format!("missing extension {}", std::any::type_name::<ToolActor>()),
-                    None,
-                )
-            })?;
-
-        Ok(Self(actor))
-    }
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
