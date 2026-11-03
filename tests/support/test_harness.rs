@@ -40,7 +40,8 @@ impl TestDb {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS auth.users (
-                id uuid PRIMARY KEY
+                id uuid PRIMARY KEY,
+                active boolean NOT NULL DEFAULT true
             )
             "#,
         )
